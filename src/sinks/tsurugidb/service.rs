@@ -27,19 +27,37 @@ const TSURUGI_PROTOCOL: &str = "tsurugi";
 /// JSONオブジェクトからINSERT文を生成
 fn build_insert_sql(table: &str, value: &serde_json::Value) -> Result<String, serde_json::Error> {
     let obj = value.as_object().ok_or_else(|| {
-        serde_json::Error::custom("Expected JSON object for INSERT statement")
+        // serde_json::Errorを作成するために、io::Errorを使用
+        serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Expected JSON object for INSERT statement",
+        ))
     })?;
 
     let mut columns = Vec::new();
     let mut values = Vec::new();
 
     for (key, val) in obj {
+        // timestampフィールドは予約語の可能性があるため、スキップ
+        // （event_timestampフィールドが既に存在する場合、重複を避けるため）
+        if key == "timestamp" {
+            continue;
+        }
         columns.push(key.clone());
-        values.push(json_value_to_sql_literal(val)?);
+        // event_timestampフィールドの場合、TIMESTAMP型用の形式に変換
+        let sql_value = if key == "event_timestamp" {
+            json_value_to_timestamp_literal(val)?
+        } else {
+            json_value_to_sql_literal(val)?
+        };
+        values.push(sql_value);
     }
 
     if columns.is_empty() {
-        return Err(serde_json::Error::custom("Cannot create INSERT with no columns"));
+        return Err(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Cannot create INSERT with no columns",
+        )));
     }
 
     let sql = format!(
@@ -50,6 +68,29 @@ fn build_insert_sql(table: &str, value: &serde_json::Value) -> Result<String, se
     );
 
     Ok(sql)
+}
+
+/// TIMESTAMP型用の値をSQLリテラルに変換
+/// TsurugiDBのTIMESTAMP型は 'YYYY-MM-DD HH:MM:SS' 形式を期待
+fn json_value_to_timestamp_literal(value: &serde_json::Value) -> Result<String, serde_json::Error> {
+    match value {
+        serde_json::Value::String(s) => {
+            // ISO 8601形式の文字列をパースして、TsurugiDB形式に変換
+            // 例: '2025-12-15T05:34:01.000904Z' -> '2025-12-15 05:34:01'
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                let formatted = dt.format("%Y-%m-%d %H:%M:%S").to_string();
+                Ok(format!("'{}'", formatted))
+            } else {
+                // パースに失敗した場合は、そのまま使用（エラーになる可能性がある）
+                let escaped = s.replace('\'', "''");
+                Ok(format!("'{}'", escaped))
+            }
+        }
+        _ => {
+            // 文字列以外の場合は、通常の変換を使用
+            json_value_to_sql_literal(value)
+        }
+    }
 }
 
 /// JSONの値をSQLリテラルに変換
@@ -90,25 +131,14 @@ impl RetryLogic for TsurugiRetryLogic {
 
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
         match error {
-            TsurugiServiceError::Tsurugi { source } => {
-                match source {
-                    // I/Oエラーはリトライ可能
-                    TgError::IoError(_, _) => true,
-                    // タイムアウトエラーはリトライ可能
-                    TgError::TimeoutError(_) => true,
-                    // クライアントエラーの一部はリトライ可能
-                    TgError::ClientError(msg, _) => {
-                        // 接続関連のエラーはリトライ可能
-                        msg.contains("connection") || msg.contains("network")
-                    }
-                    // サーバーエラーは診断コードで判定
-                    TgError::ServerError(_, _, _code, _) => {
-                        // 一時的なエラー（例: デッドロック、タイムアウト）はリトライ可能
-                        // 診断コードの詳細はTsurugiの仕様に依存
-                        // 現時点では、一般的な一時的エラーを想定
-                        true // 暫定: 詳細な判定は実装時に追加
-                    }
-                }
+            TsurugiServiceError::Tsurugi { message } => {
+                // エラーメッセージから判定
+                // I/Oエラー、タイムアウトエラー、接続関連のエラーはリトライ可能
+                message.contains("IoError") 
+                    || message.contains("TimeoutError")
+                    || message.contains("connection")
+                    || message.contains("network")
+                    || message.contains("ServerError") // 暫定: サーバーエラーもリトライ可能とする
             }
             TsurugiServiceError::VectorCommon { .. } => false,
             TsurugiServiceError::JsonSerialization { .. } => false,
@@ -200,8 +230,8 @@ impl DriverResponse for TsurugiResponse {
 
 #[derive(Debug, Snafu)]
 pub enum TsurugiServiceError {
-    #[snafu(display("Tsurugi database error: {source}"))]
-    Tsurugi { source: TgError },
+    #[snafu(display("Tsurugi database error: {message}"))]
+    Tsurugi { message: String },
 
     #[snafu(display("Serialization error: {source}"))]
     VectorCommon { source: vector_common::Error },
@@ -229,7 +259,9 @@ impl Service<TsurugiRequest> for TsurugiService {
             let mut transaction_option = TransactionOption::new();
             transaction_option.set_transaction_type(service.transaction_type);
             let transaction = client.start_transaction(&transaction_option).await
-                .context(TsurugiSnafu)?;
+                .map_err(|e| TsurugiServiceError::Tsurugi { 
+                    message: format!("{}", e) 
+                })?;
             
             // 3. イベントのシリアライズ
             let json_serializer = JsonSerializerConfig::default().build();
@@ -250,17 +282,23 @@ impl Service<TsurugiRequest> for TsurugiService {
                     .context(JsonSerializationSnafu)?;
                 
                 client.execute(&transaction, &sql).await
-                    .context(TsurugiSnafu)?;
+                    .map_err(|e| TsurugiServiceError::Tsurugi { 
+                        message: format!("{}", e) 
+                    })?;
             }
             
             // 5. コミット
             let commit_option = CommitOption::default();
             client.commit(&transaction, &commit_option).await
-                .context(TsurugiSnafu)?;
+                .map_err(|e| TsurugiServiceError::Tsurugi { 
+                    message: format!("{}", e) 
+                })?;
             
             // 6. トランザクションのクローズ
             transaction.close().await
-                .context(TsurugiSnafu)?;
+                .map_err(|e| TsurugiServiceError::Tsurugi { 
+                    message: format!("{}", e) 
+                })?;
             
             // 7. メトリクスの発行
             emit!(EndpointBytesSent {

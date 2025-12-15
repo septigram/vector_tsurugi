@@ -164,19 +164,9 @@ async fn healthcheck(session: Arc<Session>) -> crate::Result<()> {
     let transaction = client.start_transaction(&transaction_option).await
         .map_err(|e| crate::Error::from(format!("Failed to start transaction: {}", e)))?;
     
-    // SELECT 1 を実行して接続を確認
-    let sql = "SELECT 1";
-    let mut query_result = client.query(&transaction, sql).await
-        .map_err(|e| crate::Error::from(format!("Failed to execute query: {}", e)))?;
-    
-    // 結果を確認（1行取得できればOK）
-    if query_result.next_row().await
-        .map_err(|e| crate::Error::from(format!("Failed to read row: {}", e)))? {
-        // 正常
-    }
-    
-    query_result.close().await
-        .map_err(|e| crate::Error::from(format!("Failed to close query result: {}", e)))?;
+    // TsurugiDBではSELECT 1がサポートされていないため、
+    // トランザクションが正常に開始できれば接続は成功とみなす
+    // トランザクションをクローズして正常終了
     transaction.close().await
         .map_err(|e| crate::Error::from(format!("Failed to close transaction: {}", e)))?;
     

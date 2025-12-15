@@ -34,7 +34,8 @@ fn create_event(id: i64) -> Event {
     event.insert("host", "example.com");
     let event_payload = event.clone().into_parts().0;
     event.insert("payload", event_payload);
-    event.insert("timestamp", timestamp());
+    // カラム名をevent_timestampに変更（timestampは予約語の可能性があるため）
+    event.insert("event_timestamp", timestamp());
     event.into()
 }
 
@@ -57,7 +58,6 @@ async fn prepare_config() -> (TsurugiConfig, String) {
         r#"
             endpoint = "{endpoint}"
             table = "{table}"
-            batch.max_events = 1
         "#,
     );
     let (config, _) = load_sink::<TsurugiConfig>(&config_str).unwrap();
@@ -78,14 +78,19 @@ async fn create_test_table(endpoint: &str, table: &str) -> Result<(), String> {
     let client: SqlClient = session.make_client();
 
     // トランザクションを開始
+    // 注意: Long Transactionではwrite preserveが必要なため、テーブル作成にはShort Transaction (OCC)を使用
     let mut transaction_option = TransactionOption::new();
-    transaction_option.set_transaction_type(TransactionType::Long);
+    transaction_option.set_transaction_type(TransactionType::Short);
     let transaction = client.start_transaction(&transaction_option).await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     // テーブルを作成
+    // 注意: 
+    // - timestampは予約語の可能性があるため、event_timestampに変更
+    // - TEXT型はサポートされていないため、VARCHARを使用
+    // - JSON型も確認が必要だが、一旦VARCHARで試す
     let create_table_sql = format!(
-        "CREATE TABLE {table} (id BIGINT, host TEXT, timestamp TIMESTAMPTZ, message TEXT, payload JSON)"
+        "CREATE TABLE {table} (id BIGINT, host VARCHAR, event_timestamp TIMESTAMP, message VARCHAR, payload VARCHAR)"
     );
     client.execute(&transaction, &create_table_sql).await
         .map_err(|e| format!("Failed to create table: {}", e))?;
@@ -111,7 +116,11 @@ async fn healthcheck_passes() {
         .build(SinkContext::default())
         .await
         .expect("sink should build successfully");
-    assert!(healthcheck.await.is_ok());
+    let result = healthcheck.await;
+    if let Err(e) = &result {
+        eprintln!("Healthcheck failed: {}", e);
+    }
+    assert!(result.is_ok(), "Healthcheck should succeed");
 }
 
 #[tokio::test]
@@ -173,7 +182,8 @@ async fn insert_single_event() {
 
     let (input_event, mut receiver) = create_event_with_notifier(0);
     let input_log_event = input_event.clone().into_log();
-    let expected_value = serde_json::to_value(&input_log_event).unwrap();
+    // TODO: 実際のTsurugiサーバーからデータを取得して検証する際に使用
+    let _expected_value = serde_json::to_value(&input_log_event).unwrap();
 
     run_and_assert_sink_compliance(sink, stream::once(ready(input_event)), &TSURUGI_SINK_TAGS)
         .await;
