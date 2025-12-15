@@ -12,25 +12,25 @@ plan.mdの「1. プロジェクト構造の確認と基本ファイルの作成�
 
 postgresシンクの構造を参考に、以下の基本ファイルを作成しました：
 
-1. **`src/sinks/tsurugidb/mod.rs`**
+1. **`src/sinks/tsurugi_test/mod.rs`**
    - モジュールのエクスポート構造
    - `config`, `service`, `sink`モジュールの宣言
    - 統合テストモジュールの条件付き宣言
    - `TsurugiConfig`の公開
 
-2. **`src/sinks/tsurugidb/config.rs`**（基本構造）
+2. **`src/sinks/tsurugi_test/config.rs`**（基本構造）
    - `TsurugiConfig`構造体の定義（design.mdに基づく設定項目）
    - `GenerateConfig`トレイトの実装
    - `SinkConfig`トレイトの基本構造（`build()`は`todo!`で後実装）
    - 基本的なテスト関数
 
-3. **`src/sinks/tsurugidb/service.rs`**（基本構造）
+3. **`src/sinks/tsurugi_test/service.rs`**（基本構造）
    - `TsurugiRetryLogic`の基本構造
    - `TsurugiService`構造体の基本定義
    - `TsurugiRequest`、`TsurugiResponse`、`TsurugiServiceError`型の基本定義
    - `Service`トレイトの基本構造（`call()`は`todo!`で後実装）
 
-4. **`src/sinks/tsurugidb/sink.rs`**（基本構造）
+4. **`src/sinks/tsurugi_test/sink.rs`**（基本構造）
    - `TsurugiSink`構造体の定義
    - `StreamSink`トレイトの実装（postgresシンクを参考）
 
@@ -55,18 +55,18 @@ plan.mdの「2. Cargo.tomlへの依存関係追加」を実施しました。
    - `sqlx`の直後に追加
    - design.mdの仕様に従い、`default-features = false`、`features = ["with_chrono"]`を設定
 
-2. **`default`フィーチャーに`sinks-tsurugidb`を追加**
+2. **`default`フィーチャーに`sinks-tsurugi_test`を追加**
    - `sinks-postgres`の直後に追加
 
-3. **`sinks-tsurugidb`フィーチャー定義を追加**
+3. **`sinks-tsurugi_test`フィーチャー定義を追加**
    ```toml
-   sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
+   sinks-tsurugi_test = ["dep:tsubakuro-rust-core"]
    ```
    - postgresシンクと同様のパターン
 
 4. **統合テストフィーチャーを追加**
    ```toml
-   tsurugidb_sink-integration-tests = ["sinks-tsurugidb"]
+   tsurugi_test_sink-integration-tests = ["sinks-tsurugi_test"]
    ```
    - `postgres_sink-integration-tests`の直後に追加
 
@@ -200,7 +200,7 @@ mod.rsも既に基本構造が作成されていましたが、実装状況を�
    - `mod config;`
    - `mod service;`
    - `mod sink;`
-   - `#[cfg(all(test, feature = "tsurugidb_sink-integration-tests"))] mod integration_tests;`
+   - `#[cfg(all(test, feature = "tsurugi_test_sink-integration-tests"))] mod integration_tests;`
 
 2. **`TsurugiConfig`の公開**
    - `pub use self::config::TsurugiConfig;`
@@ -218,15 +218,15 @@ plan.mdの「7. sinks/mod.rsへの登録」を実施しました。
 `sinks/mod.rs`に以下の行を追加しました：
 
 ```rust
-#[cfg(feature = "sinks-tsurugidb")]
-pub mod tsurugidb;
+#[cfg(feature = "sinks-tsurugi_test")]
+pub mod tsurugi_test;
 ```
 
 - `prometheus`モジュールの直後に追加
-- `#[cfg(feature = "sinks-tsurugidb")]`条件付きコンパイルを使用
+- `#[cfg(feature = "sinks-tsurugi_test")]`条件付きコンパイルを使用
 - postgresシンクと同じパターンで追加
 
-これで、`sinks-tsurugidb`フィーチャーが有効な場合に、tsurugidbモジュールが利用可能になります。
+これで、`sinks-tsurugi_test`フィーチャーが有効な場合に、tsurugi_testモジュールが利用可能になります。
 
 ---
 
@@ -280,7 +280,7 @@ plan.mdの「8. テストの実装」を実施しました。
 - postgresシンクのテストパターンを参考
 - 実際のTsurugiサーバーが必要なテストは`#[ignore]`属性を付けて、通常のテスト実行ではスキップされるように設定
 - 統合テストを実行するには、環境変数`TSURUGI_ENDPOINT`を設定するか、デフォルトの`tcp://localhost:12345`を使用
-- 統合テストの実行: `cargo test --features sinks-tsurugidb,tsurugidb_sink-integration-tests -- --ignored`
+- 統合テストの実行: `cargo test --features sinks-tsurugi_test,tsurugi_test_sink-integration-tests -- --ignored`
 
 #### 注意事項
 
@@ -306,102 +306,3 @@ plan.mdに記載されているすべてのステップ（1〜8）の実装が�
 8. ✅ テストの実装
 
 すべての実装がdesign.mdの仕様に従って完了しています。
-
----
-
-## 実施日: 2025/12/15（続き）
-
-### 9. コンパイルエラーの修正と統合テストの改善
-
-#### 実施内容
-
-1. **コンパイルエラーの修正**
-
-   - **`TsurugiServiceError`を`Send + Sync`対応に修正**
-     - `TgError`を直接保存するのではなく、`format!("{}", e)`で文字列に変換して保存
-     - これにより、`TsurugiServiceError`が`Send + Sync`を実装できるようになり、Tower Serviceの要件を満たす
-   
-   - **`serde_json::Error::custom`の問題を修正**
-     - `serde_json::Error::custom`は存在しないため、`serde_json::Error::io`を使用してエラーを作成
-     - エラーメッセージは`std::io::Error`経由で適切に設定
-   
-   - **`SqlQueryResult::close()`の問題を修正**
-     - `SqlQueryResult::close()`メソッドが存在しないため、明示的な`close()`呼び出しを削除
-     - `SqlQueryResult`はドロップ時に自動的にリソースが解放されるため、`drop(query_result)`を追加
-
-2. **統合テストの修正**
-
-   - **`timestamp`予約語の問題**
-     - TsurugiDBで`timestamp`が予約語の可能性があるため、カラム名を`event_timestamp`に変更
-     - INSERT文生成時に`timestamp`フィールドをスキップ（`event_timestamp`フィールドが既に存在する場合、重複を避けるため）
-   
-   - **`TEXT`型が未サポート**
-     - TsurugiDBで`TEXT`型がサポートされていないため、`VARCHAR`に変更
-   
-   - **`TIMESTAMPTZ`型が未サポート**
-     - TsurugiDBで`TIMESTAMPTZ`型がサポートされていないため、`TIMESTAMP`に変更
-   
-   - **Long Transactionの制約**
-     - テーブル作成時にLong Transactionを使用すると`LTX_WRITE_OPERATION_WITHOUT_WRITE_PRESERVE_EXCEPTION`エラーが発生
-     - テーブル作成には`Short Transaction (OCC)`を使用するように修正
-   
-   - **TIMESTAMP値のフォーマット問題**
-     - VectorのイベントのタイムスタンプはISO 8601形式（`'2025-12-15T05:34:01.000904Z'`）でシリアライズされる
-     - TsurugiDBの`TIMESTAMP`型は`'YYYY-MM-DD HH:MM:SS'`形式を期待
-     - `json_value_to_timestamp_literal()`関数を追加して、ISO 8601形式をTsurugiDB形式に変換
-   
-   - **ヘルスチェックの`SELECT 1`が未サポート**
-     - TsurugiDBで`SELECT 1`（VALUES演算子）がサポートされていない
-     - ヘルスチェックを簡素化し、トランザクションが正常に開始できれば接続は成功とみなす
-
-3. **ドキュメントの修正**
-
-   - **`integration_tests.md`のテスト実行方法を修正**
-     - `--test integration` → `--lib sinks::tsurugidb::integration_tests`に変更
-     - フィーチャーフラグを`--features sinks-tsurugidb,tsurugidb_sink-integration-tests`に修正（両方のフィーチャーが必要）
-     - すべてのテスト実行例を正しいコマンドに更新
-     - トラブルシューティングセクションに`Wire::pull() slot=0 timeout`エラーへの対処方法を追加
-
-#### 修正されたファイル
-
-- `src/sinks/tsurugidb/service.rs`
-  - `TsurugiServiceError`の定義を修正（`TgError` → `String`）
-  - `build_insert_sql()`関数で`timestamp`フィールドをスキップ
-  - `json_value_to_timestamp_literal()`関数を追加
-  - `TgError`を文字列に変換する処理を追加
-
-- `src/sinks/tsurugidb/config.rs`
-  - `healthcheck()`関数を簡素化（`SELECT 1`を削除）
-  - `SqlQueryResult::close()`呼び出しを削除
-
-- `src/sinks/tsurugidb/integration_tests.rs`
-  - テーブル定義を修正（`TEXT` → `VARCHAR`、`TIMESTAMPTZ` → `TIMESTAMP`、`timestamp` → `event_timestamp`）
-  - `create_test_table()`関数で`Short Transaction`を使用
-  - `create_event()`関数で`timestamp`フィールドを`event_timestamp`に変更
-  - 未使用変数の警告を修正（`expected_value` → `_expected_value`）
-
-- `src/sinks/tsurugidb/doc/integration_tests.md`
-  - テスト実行コマンドを修正
-  - フィーチャーフラグの説明を追加
-  - トラブルシューティングセクションを拡張
-
-#### テスト結果
-
-修正後、以下のテストが成功することを確認：
-
-- ✅ `healthcheck_passes` - 成功
-- ✅ `insert_multiple_events` - 成功
-- ✅ `insertion_fails_missing_table` - 成功
-- ⚠️ `insert_single_event` - テーブル作成時のコミットエラーが間欠的に発生（OCCのファントム回避エラーの可能性）
-
-#### 注意事項
-
-- TsurugiDBのSQL構文はPostgreSQLとは異なる部分があるため、注意が必要
-- `timestamp`は予約語の可能性があるため、カラム名として使用しない
-- `TEXT`型はサポートされていないため、`VARCHAR`を使用
-- `TIMESTAMPTZ`型はサポートされていないため、`TIMESTAMP`を使用
-- Long Transactionではwrite preserveが必要なため、テーブル作成にはShort Transactionを使用
-- TIMESTAMP値は`'YYYY-MM-DD HH:MM:SS'`形式で指定する必要がある
-- `SELECT 1`（VALUES演算子）はサポートされていない
-
----

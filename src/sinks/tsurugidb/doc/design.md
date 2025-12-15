@@ -148,6 +148,21 @@ fn parse_transaction_type(s: &str) -> Result<TransactionType, String> {
 }
 ```
 
+#### GenerateConfigトレイトの実装
+
+```rust
+impl GenerateConfig for TsurugiConfig {
+    fn generate_config() -> toml::Value {
+        toml::from_str(
+            r#"endpoint = "tcp://localhost:12345"
+            table = "table"
+        "#,
+        )
+        .unwrap()
+    }
+}
+```
+
 #### SinkConfigトレイトの実装
 
 ```rust
@@ -157,14 +172,16 @@ impl SinkConfig for TsurugiConfig {
     async fn build(&self, _cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
         // 1. ConnectionOptionの作成
         let mut connection_option = ConnectionOption::new();
-        connection_option.set_endpoint_url(&self.endpoint)?;
+        connection_option.set_endpoint_url(&self.endpoint)
+            .map_err(|e| crate::Error::from(format!("Failed to set endpoint URL: {}", e)))?;
         connection_option.set_application_name("Vector Tsurugi Sink");
         connection_option.set_default_timeout(Duration::from_secs(10));
 
         // 2. セッションの作成（接続プールの代わり）
         // 注意: 現在のtsubakuro-rust-coreは接続プールを提供していないため、
         // セッションを直接保持する
-        let session = Session::connect(&connection_option).await?;
+        let session = Session::connect(&connection_option).await
+            .map_err(|e| crate::Error::from(format!("Failed to connect to Tsurugi: {}", e)))?;
 
         // 3. ヘルスチェックの作成
         let healthcheck = healthcheck(session.clone()).boxed();
@@ -216,23 +233,20 @@ async fn healthcheck(session: Arc<Session>) -> crate::Result<()> {
     let mut transaction_option = TransactionOption::new();
     transaction_option.set_transaction_type(TransactionType::ReadOnly);
     
-    let transaction = client.start_transaction(&transaction_option).await?;
+    let transaction = client.start_transaction(&transaction_option).await
+        .map_err(|e| crate::Error::from(format!("Failed to start transaction: {}", e)))?;
     
-    // SELECT 1 を実行して接続を確認
-    let sql = "SELECT 1";
-    let mut query_result = client.query(&transaction, sql).await?;
-    
-    // 結果を確認（1行取得できればOK）
-    if query_result.next_row().await? {
-        // 正常
-    }
-    
-    query_result.close().await?;
-    transaction.close().await?;
+    // TsurugiDBではSELECT 1がサポートされていないため、
+    // トランザクションが正常に開始できれば接続は成功とみなす
+    // トランザクションをクローズして正常終了
+    transaction.close().await
+        .map_err(|e| crate::Error::from(format!("Failed to close transaction: {}", e)))?;
     
     Ok(())
 }
 ```
+
+**注意**: TsurugiDBでは`SELECT 1`のような単純なSELECT文がサポートされていないため、ヘルスチェックはトランザクションの開始とクローズのみで接続を確認します。トランザクションが正常に開始できれば、接続は成功とみなします。
 
 ### 2. service.rs
 
@@ -248,7 +262,7 @@ pub struct TsurugiService {
 }
 
 impl TsurugiService {
-    pub const fn new(
+    pub fn new(
         session: Arc<Session>,
         table: String,
         endpoint: String,
@@ -262,6 +276,9 @@ impl TsurugiService {
         }
     }
 }
+```
+
+**注意**: `new`関数は`const fn`ではなく、通常の関数として実装されています。
 ```
 
 **設計上の考慮事項**:
@@ -292,7 +309,9 @@ impl Service<TsurugiRequest> for TsurugiService {
             let mut transaction_option = TransactionOption::new();
             transaction_option.set_transaction_type(service.transaction_type);
             let transaction = client.start_transaction(&transaction_option).await
-                .context(TsurugiSnafu)?;
+                .map_err(|e| TsurugiServiceError::Tsurugi { 
+                    message: format!("{}", e) 
+                })?;
             
             // 3. イベントのシリアライズ
             let json_serializer = JsonSerializerConfig::default().build();
@@ -313,19 +332,25 @@ impl Service<TsurugiRequest> for TsurugiService {
                     .context(JsonSerializationSnafu)?;
                 
                 client.execute(&transaction, &sql).await
-                    .context(TsurugiSnafu)?;
+                    .map_err(|e| TsurugiServiceError::Tsurugi { 
+                        message: format!("{}", e) 
+                    })?;
             }
             
-            // 6. コミット
+            // 5. コミット
             let commit_option = CommitOption::default();
             client.commit(&transaction, &commit_option).await
-                .context(TsurugiSnafu)?;
+                .map_err(|e| TsurugiServiceError::Tsurugi { 
+                    message: format!("{}", e) 
+                })?;
             
-            // 7. トランザクションのクローズ
+            // 6. トランザクションのクローズ
             transaction.close().await
-                .context(TsurugiSnafu)?;
+                .map_err(|e| TsurugiServiceError::Tsurugi { 
+                    message: format!("{}", e) 
+                })?;
             
-            // 8. メトリクスの発行
+            // 7. メトリクスの発行
             emit!(EndpointBytesSent {
                 byte_size: request.metadata.request_encoded_size(),
                 protocol: TSURUGI_PROTOCOL,
@@ -358,7 +383,18 @@ for value in serialized_values {
 `build_insert_sql`関数は、JSONオブジェクトからINSERT文を生成します：
 - JSONオブジェクトのキーをカラム名として使用
 - 値は適切にエスケープしてSQLリテラルに変換
+- `timestamp`フィールドは予約語の可能性があるためスキップ（`event_timestamp`フィールドが既に存在する場合、重複を避けるため）
+- `event_timestamp`フィールドはTIMESTAMP型用の形式（`'YYYY-MM-DD HH:MM:SS'`）に変換
 - 例: `{"col1": "val1", "col2": 123}` → `INSERT INTO table (col1, col2) VALUES ('val1', 123)`
+
+**SQLリテラル変換の詳細**:
+
+- `Null`: `NULL`
+- `Bool`: そのまま文字列化（`true` / `false`）
+- `Number`: そのまま文字列化
+- `String`: シングルクォートで囲み、内部のシングルクォートを`''`にエスケープ
+- `Array` / `Object`: JSON文字列としてシリアライズし、シングルクォートで囲む
+- `event_timestamp`: ISO 8601形式（例: `'2025-12-15T05:34:01.000904Z'`）をTsurugiDB形式（`'2025-12-15 05:34:01'`）に変換
 
 **パフォーマンス考慮事項**:
 - バッチ内のすべてのイベントを1つのトランザクションで実行することで、パフォーマンスを最適化
@@ -377,25 +413,14 @@ impl RetryLogic for TsurugiRetryLogic {
 
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
         match error {
-            TsurugiServiceError::Tsurugi { source } => {
-                match source {
-                    // I/Oエラーはリトライ可能
-                    TgError::IoError(_, _) => true,
-                    // タイムアウトエラーはリトライ可能
-                    TgError::TimeoutError(_) => true,
-                    // クライアントエラーの一部はリトライ可能
-                    TgError::ClientError(msg, _) => {
-                        // 接続関連のエラーはリトライ可能
-                        msg.contains("connection") || msg.contains("network")
-                    }
-                    // サーバーエラーは診断コードで判定
-                    TgError::ServerError(_, _, code, _) => {
-                        // 一時的なエラー（例: デッドロック、タイムアウト）はリトライ可能
-                        // 診断コードの詳細はTsurugiの仕様に依存
-                        // 現時点では、一般的な一時的エラーを想定
-                        true // 暫定: 詳細な判定は実装時に追加
-                    }
-                }
+            TsurugiServiceError::Tsurugi { message } => {
+                // エラーメッセージから判定
+                // I/Oエラー、タイムアウトエラー、接続関連のエラーはリトライ可能
+                message.contains("IoError") 
+                    || message.contains("TimeoutError")
+                    || message.contains("connection")
+                    || message.contains("network")
+                    || message.contains("ServerError") // 暫定: サーバーエラーもリトライ可能とする
             }
             TsurugiServiceError::VectorCommon { .. } => false,
             TsurugiServiceError::JsonSerialization { .. } => false,
@@ -403,6 +428,8 @@ impl RetryLogic for TsurugiRetryLogic {
     }
 }
 ```
+
+**注意**: 現在の実装では、tsubakuro-rust-coreのエラー型（`TgError`）を直接使用せず、エラーメッセージを文字列として保持しています。そのため、リトライ判定はエラーメッセージの文字列マッチングで行っています。
 
 #### TsurugiRequest
 
@@ -475,8 +502,8 @@ impl DriverResponse for TsurugiResponse {
 ```rust
 #[derive(Debug, Snafu)]
 pub enum TsurugiServiceError {
-    #[snafu(display("Tsurugi database error: {source}"))]
-    Tsurugi { source: TgError },
+    #[snafu(display("Tsurugi database error: {message}"))]
+    Tsurugi { message: String },
 
     #[snafu(display("Serialization error: {source}"))]
     VectorCommon { source: vector_common::Error },
@@ -485,6 +512,8 @@ pub enum TsurugiServiceError {
     JsonSerialization { source: serde_json::Error },
 }
 ```
+
+**注意**: 現在の実装では、tsubakuro-rust-coreのエラー型（`TgError`）を直接保持せず、エラーメッセージを文字列として保持しています。これは、エラー型の詳細な情報が必要な場合に拡張可能な設計です。
 
 ### 3. sink.rs
 
@@ -554,16 +583,17 @@ pub use self::config::TsurugiConfig;
 ### エラー分類
 
 1. **リトライ可能なエラー**:
-   - I/Oエラー（ネットワーク障害など）
-   - タイムアウトエラー
-   - 接続関連のクライアントエラー
-   - 一時的なサーバーエラー（デッドロックなど）
+   - I/Oエラー（ネットワーク障害など）- エラーメッセージに`"IoError"`が含まれる
+   - タイムアウトエラー - エラーメッセージに`"TimeoutError"`が含まれる
+   - 接続関連のクライアントエラー - エラーメッセージに`"connection"`または`"network"`が含まれる
+   - 一時的なサーバーエラー - エラーメッセージに`"ServerError"`が含まれる（暫定）
 
 2. **リトライ不可能なエラー**:
-   - シリアライズエラー
+   - シリアライズエラー（`VectorCommon`、`JsonSerialization`）
    - SQL構文エラー
    - 制約違反エラー
    - 認証エラー
+   - その他の`Tsurugi`エラーで、上記のリトライ可能なパターンに一致しないもの
 
 ### エラー処理の流れ
 
@@ -606,8 +636,11 @@ TsurugiRetryLogicで判定
 ### SQLインジェクション対策
 
 - テーブル名は設定ファイルから取得し、信頼できるソースからのみ使用
-- イベントデータはJSONとしてシリアライズし、SQLパラメータとして渡す
+- イベントデータはJSONとしてシリアライズし、SQLリテラルに変換してINSERT文に埋め込む
 - テーブル名はパラメータ化できないため、設定値の検証が重要
+- 文字列値はシングルクォートで囲み、内部のシングルクォートを`''`にエスケープ
+- 配列やオブジェクトはJSON文字列としてシリアライズし、シングルクォートで囲む
+- `event_timestamp`フィールドはTIMESTAMP型用の形式に変換（ISO 8601 → `'YYYY-MM-DD HH:MM:SS'`）
 
 ### 認証
 
@@ -620,13 +653,17 @@ TsurugiRetryLogicで判定
 ### ユニットテスト
 
 1. **config.rs**:
-   - `generate_config()`テスト
-   - `parse_config()`テスト
-   - 不正な設定値の検証
+   - `generate_config()`テスト - `GenerateConfig`トレイトの実装をテスト
+   - `parse_config()`テスト - 基本的な設定のパースをテスト
+   - `parse_config_with_custom_values()`テスト - カスタム値（pool_size、transaction_type）のパースをテスト
+   - `parse_config_with_default_transaction_type()`テスト - デフォルト値の確認
+   - `parse_config_invalid_transaction_type()`テスト - 不正なtransaction_typeの検証
+   - `parse_config_missing_required_fields()`テスト - 必須フィールドの検証
+   - `parse_config_unknown_fields()`テスト - 未知のフィールドの拒否（`deny_unknown_fields`の確認）
 
 2. **service.rs**:
-   - エラー変換のテスト
-   - リトライロジックのテスト
+   - エラー変換のテスト（将来的に追加可能）
+   - リトライロジックのテスト（将来的に追加可能）
 
 ### 統合テスト
 
@@ -685,20 +722,26 @@ sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
 
 ## 実装の優先順位
 
-1. **Phase 1: 基本実装**
+1. **Phase 1: 基本実装** ✅ 完了
    - config.rs, service.rs, sink.rs, mod.rsの基本実装
    - 個別INSERT文によるデータ挿入
    - トランザクションタイプ（OCC/LTX）の設定対応
    - 基本的なエラーハンドリング
+   - `build_insert_sql`関数によるJSONからINSERT文への変換
+   - `event_timestamp`フィールドのTIMESTAMP型対応
+   - ヘルスチェック実装
+   - ユニットテスト（config.rs）
 
-2. **Phase 2: 最適化**
-   - リトライロジックの改善
+2. **Phase 2: 最適化** 🔄 進行中
+   - リトライロジックの改善（エラーメッセージベースの判定を実装）
    - パフォーマンスチューニング
    - バッチサイズの最適化
+   - 統合テストの追加
 
-3. **Phase 3: 拡張機能**
+3. **Phase 3: 拡張機能** 📋 将来
    - 認証サポート
    - 接続プール対応（実装された場合）
+   - エラー型の詳細化（`TgError`の直接利用）
 
 ## 参考資料
 
