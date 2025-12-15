@@ -26,3 +26,11 @@ pub mod postgres {
             .unwrap_or_else(|_| format!("postgres://vector:vector@{}/postgres", pg_host()))
     }
 }
+
+#[cfg(feature = "tsurugidb_sink-integration-tests")]
+pub mod tsurugi {
+    pub fn tsurugi_endpoint() -> String {
+        std::env::var("TSURUGI_ENDPOINT")
+            .unwrap_or_else(|_| "tcp://localhost:12345".into())
+    }
+}
