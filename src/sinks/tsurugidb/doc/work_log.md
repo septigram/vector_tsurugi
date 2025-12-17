@@ -415,12 +415,7 @@ plan.mdに記載されているすべてのステップ（1〜8）の実装が�
 1. **tsubakuro-rust-coreのバージョン更新**
    
    - **Cargo.tomlの更新**
-     - バージョンを`0.1`から`0.7`に更新
-     - GitHubリポジトリから直接参照するように変更：
-       ```toml
-       tsubakuro-rust-core = { git = "https://github.com/project-tsurugi/tsubakuro-rust.git", branch = "master", default-features = false, features = ["with_chrono"], optional = true }
-       ```
-     - 実際のバージョンは0.7.0（GitHubリポジトリのCargo.tomlで確認）
+     - バージョンを`0.1.0`から`0.6.0`に更新
 
 2. **TsurugiCredentialConfig enumの実装**
    

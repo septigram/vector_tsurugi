@@ -413,7 +413,7 @@ snap = { version = "1.1.1", default-features = false }
 socket2.workspace = true
 sqlx = { version = "0.8.6", default-features = false, features = ["derive", "postgres", "chrono", "runtime-tokio"], optional = true }
 stream-cancel = { version = "0.8.2", default-features = false }
-tsubakuro-rust-core = { git = "https://github.com/project-tsurugi/tsubakuro-rust.git", branch = "master", default-features = false, features = ["with_chrono"], optional = true }
+tsubakuro-rust-core = { version = "0.6.0", default-features = false, features = ["with_chrono"], optional = true }
 strip-ansi-escapes = { version = "0.2.1", default-features = false }
 syslog = { version = "6.1.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6.0", default-features = false, features = ["unprefixed_malloc_on_supported_platforms"], optional = true }
