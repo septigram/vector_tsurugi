@@ -224,7 +224,7 @@ Tsurugi Database
 
 ### 認証
 
-認証情報の設定は`credential`フィールドでサポートされています。tsubakuro-rust-core 0.7.0以降で利用可能な`Credential`型を使用して実装されています。
+認証情報の設定は`credential`フィールドでサポートされています。tsubakuro-rust-core 0.5.0以降で利用可能な`Credential`型を使用して実装されています。
 
 詳細は[認証設定](#認証設定)セクションを参照してください。
 
@@ -278,9 +278,8 @@ Tsurugi Database
 
 以下の機能を将来追加する予定です：
 
-1. ✅ **認証サポート**: `Credential`を使用した認証機能（実装完了 - tsubakuro-rust-core 0.7.0）
-2. **接続プール対応**: tsubakuro-rust-coreに接続プールが実装された場合の対応
-3. **エラー型の詳細化**: `TgError`の直接利用によるより詳細なエラー情報
+1. **接続プール対応**: tsubakuro-rust-coreに接続プールが実装された場合の対応
+2. **エラー型の詳細化**: `TgError`の直接利用によるより詳細なエラー情報
 
 ## 関連リンク
 

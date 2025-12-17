@@ -693,7 +693,7 @@ TsurugiRetryLogicで判定
 
 ### 認証
 
-認証情報の設定は`credential`フィールドでサポートされています。tsubakuro-rust-core 0.7.0以降で利用可能な`Credential`型を使用して実装されています。
+認証情報の設定は`credential`フィールドでサポートされています。tsubakuro-rust-core 0.5.0以降で利用可能な`Credential`型を使用して実装されています。
 
 #### サポートされる認証方式
 
@@ -775,8 +775,6 @@ pub struct TsurugiService {
 
 ### 認証対応
 
-✅ **実装完了** (tsubakuro-rust-core 0.7.0)
-
 認証情報の設定は`TsurugiCredentialConfig`型で実装されています。詳細は「認証」セクションを参照してください。
 
 ## 依存関係
@@ -790,8 +788,6 @@ tsubakuro-rust-core = { git = "https://github.com/project-tsurugi/tsubakuro-rust
 [features]
 sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
 ```
-
-**注意**: 現在はGitHubリポジトリから直接参照しています（バージョン0.7.0）。crates.ioに0.7.0が公開された場合は、バージョン指定に変更可能です。
 
 ### 機能フラグ
 
@@ -809,6 +805,7 @@ sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
    - `event_timestamp`フィールドのTIMESTAMP型対応
    - ヘルスチェック実装
    - ユニットテスト（config.rs）
+   - 認証サポート
 
 2. **Phase 2: 最適化** 🔄 進行中
    - リトライロジックの改善（エラーメッセージベースの判定を実装）
@@ -816,8 +813,7 @@ sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
    - バッチサイズの最適化
    - 統合テストの追加
 
-3. **Phase 3: 拡張機能** ✅ 一部完了
-   - ✅ 認証サポート（tsubakuro-rust-core 0.7.0で実装完了）
+3. **Phase 3: 拡張機能** 📋 未着手
    - 📋 接続プール対応（実装された場合）
    - 📋 エラー型の詳細化（`TgError`の直接利用）
 
