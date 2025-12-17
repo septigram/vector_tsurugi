@@ -405,3 +405,147 @@ plan.mdに記載されているすべてのステップ（1〜8）の実装が�
 - `SELECT 1`（VALUES演算子）はサポートされていない
 
 ---
+
+## 実施日: 2025/12/17
+
+### 10. tsubakuro-rust-core/session/credential対応の実装
+
+#### 実施内容
+
+1. **tsubakuro-rust-coreのバージョン更新**
+   
+   - **Cargo.tomlの更新**
+     - バージョンを`0.1`から`0.7`に更新
+     - GitHubリポジトリから直接参照するように変更：
+       ```toml
+       tsubakuro-rust-core = { git = "https://github.com/project-tsurugi/tsubakuro-rust.git", branch = "master", default-features = false, features = ["with_chrono"], optional = true }
+       ```
+     - 実際のバージョンは0.7.0（GitHubリポジトリのCargo.tomlで確認）
+
+2. **TsurugiCredentialConfig enumの実装**
+   
+   - **認証情報設定の列挙型を追加**
+     - `UserPassword`: ユーザー名/パスワード認証
+       - `user: String` - ユーザー名
+       - `password: Option<SensitiveString>` - パスワード（オプション）
+     - `AuthToken`: 認証トークン認証
+       - `token: SensitiveString` - 認証トークン
+     - `File`: ファイルから認証情報を読み込み
+       - `path: String` - 認証情報ファイルのパス
+   
+   - **`to_credential()`メソッドの実装**
+     - `TsurugiCredentialConfig`から`Credential`型への変換
+     - `Credential::from_user_password()`、`Credential::from_auth_token()`、`Credential::load()`を使用
+     - エラーハンドリングを実装
+
+3. **TsurugiConfigへのcredentialフィールド追加**
+   
+   - **設定構造体の更新**
+     ```rust
+     /// 認証情報（オプション）
+     #[configurable(derived)]
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub credential: Option<TsurugiCredentialConfig>,
+     ```
+   - `TowerRequestConfig`の後に追加
+   - オプショナルフィールドとして実装
+
+4. **SinkConfig::build()メソッドの更新**
+   
+   - **認証情報設定の処理を追加**
+     ```rust
+     // 認証情報の設定
+     if let Some(credential_config) = &self.credential {
+         let credential = credential_config.to_credential()?;
+         connection_option.set_credential(credential);
+     }
+     ```
+   - `ConnectionOption::set_credential()`を使用して認証情報を設定
+   - エラーハンドリングを実装
+
+5. **テストの追加**
+   
+   - **credential関連のパーステストを追加**
+     - `parse_config_with_user_password_credential()`: ユーザー名/パスワード認証のパーステスト
+     - `parse_config_with_user_password_credential_no_password()`: パスワードなしのユーザー名/パスワード認証のパーステスト
+     - `parse_config_with_auth_token_credential()`: 認証トークン認証のパーステスト
+     - `parse_config_with_file_credential()`: ファイル認証のパーステスト
+   
+   - すべてのテストが成功することを確認
+
+6. **ドキュメントの更新**
+   
+   - **design.mdの更新**
+     - `TsurugiConfig`構造体に`credential`フィールドを追加
+     - `TsurugiCredentialConfig`の定義を追加
+     - 認証セクションを詳細に更新（実装完了を明記、3つの認証方式の説明を追加）
+     - `SinkConfig::build()`の実装例に認証情報設定のコードを追加
+     - 依存関係の記述をGitHubリポジトリ参照に更新
+     - Phase 3の認証サポートを「完了」に更新
+
+#### 実装の詳細
+
+- **tsubakuro-rust-core 0.7.0のCredential型を使用**
+  - `Credential::from_user_password()`: ユーザー名/パスワード認証情報を作成
+  - `Credential::from_auth_token()`: 認証トークン認証情報を作成
+  - `Credential::load()`: ファイルから認証情報を読み込み
+  - `ConnectionOption::set_credential()`: 認証情報を設定
+
+- **機密情報の扱い**
+  - パスワードとトークンは`SensitiveString`型を使用
+  - ログ出力時に自動的にマスクされる
+
+- **設定ファイルの例**
+  ```toml
+  [credential]
+  type = "user_password"
+  user = "admin"
+  password = "secret123"
+  ```
+  
+  ```toml
+  [credential]
+  type = "auth_token"
+  token = "your-auth-token"
+  ```
+  
+  ```toml
+  [credential]
+  type = "file"
+  path = "/etc/tsurugi/credentials"
+  ```
+
+#### 修正されたファイル
+
+- `Cargo.toml`
+  - tsubakuro-rust-coreの依存関係をGitHubリポジトリ参照に変更（バージョン0.7.0）
+
+- `src/sinks/tsurugidb/config.rs`
+  - `TsurugiCredentialConfig` enumを追加
+  - `TsurugiConfig`に`credential`フィールドを追加
+  - `SinkConfig::build()`に認証情報設定の処理を追加
+  - credential関連のテストを追加
+
+- `src/sinks/tsurugidb/doc/design.md`
+  - 認証セクションを詳細に更新
+  - 実装完了を明記
+  - 依存関係の記述を更新
+
+#### テスト結果
+
+修正後、以下のテストが成功することを確認：
+
+- ✅ `parse_config_with_user_password_credential` - 成功
+- ✅ `parse_config_with_user_password_credential_no_password` - 成功
+- ✅ `parse_config_with_auth_token_credential` - 成功
+- ✅ `parse_config_with_file_credential` - 成功
+- ✅ 既存のすべてのテスト - 成功（11件すべて）
+
+#### 注意事項
+
+- tsubakuro-rust-core 0.7.0以降でCredential型が利用可能
+- 現在はGitHubリポジトリから直接参照しているが、crates.ioに0.7.0が公開された場合はバージョン指定に変更可能
+- パスワードやトークンは`SensitiveString`型で機密情報として扱われる
+- ファイル認証の形式はtsubakuro-rust-coreの`Credential::load()`メソッドでサポートされる形式である必要がある
+
+---

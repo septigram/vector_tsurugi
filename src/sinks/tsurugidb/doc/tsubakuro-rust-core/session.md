@@ -206,7 +206,7 @@ Tsurugiサーバーへの接続オプションです。
 新しいインスタンスを作成します。
 
 ```rust
-pub fn new() -> ConnectionOption
+pub fn new() -> ConnectionOptioncre
 ```
 
 ##### set_endpoint()

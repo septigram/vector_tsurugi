@@ -35,6 +35,7 @@ table = "log_events"
 | `transaction_type` | string | いいえ | `"occ"` | トランザクションタイプ（`"occ"` または `"ltx"`） |
 | `batch` | object | いいえ | - | イベントバッチ設定（詳細は[バッチ設定](#バッチ設定)を参照） |
 | `request` | object | いいえ | - | Towerリクエスト設定（詳細は[リクエスト設定](#リクエスト設定)を参照） |
+| `credential` | object | いいえ | - | 認証情報設定（詳細は[認証設定](#認証設定)を参照） |
 | `acknowledgements` | bool/object | いいえ | - | 確認応答設定 |
 
 ### トランザクションタイプ
@@ -62,6 +63,41 @@ retry_attempts = 5
 retry_max_duration_secs = 300
 ```
 
+### 認証設定
+
+認証情報の設定はオプションです。以下の3つの認証方式をサポートしています。
+
+#### ユーザー名/パスワード認証
+
+```toml
+[sinks.my_tsurugi_sink.credential]
+type = "user_password"
+user = "admin"
+password = "secret123"
+```
+
+`password`はオプションです（パスワードなしで接続する場合）。
+
+#### 認証トークン認証
+
+```toml
+[sinks.my_tsurugi_sink.credential]
+type = "auth_token"
+token = "your-auth-token"
+```
+
+#### ファイルから認証情報を読み込み
+
+```toml
+[sinks.my_tsurugi_sink.credential]
+type = "file"
+path = "/etc/tsurugi/credentials"
+```
+
+ファイル形式はtsubakuro-rust-coreの`Credential::load()`メソッドでサポートされる形式である必要があります。
+
+**注意**: パスワードやトークンは機密情報として扱われ、ログ出力時に自動的にマスクされます。
+
 ### 完全な設定例
 
 ```toml
@@ -71,6 +107,11 @@ endpoint = "tcp://localhost:12345"
 table = "log_events"
 transaction_type = "occ"
 pool_size = 5
+
+[sinks.my_tsurugi_sink.credential]
+type = "user_password"
+user = "admin"
+password = "secret123"
 
 [sinks.my_tsurugi_sink.batch]
 max_bytes = 10485760
@@ -183,7 +224,9 @@ Tsurugi Database
 
 ### 認証
 
-現在の実装では認証情報の設定は未実装です。将来的に`Credential`を使用した認証を追加する予定です。
+認証情報の設定は`credential`フィールドでサポートされています。tsubakuro-rust-core 0.7.0以降で利用可能な`Credential`型を使用して実装されています。
+
+詳細は[認証設定](#認証設定)セクションを参照してください。
 
 ## パフォーマンス
 
@@ -206,8 +249,7 @@ Tsurugi Database
 ## 制限事項
 
 1. **接続プール**: 現在のtsubakuro-rust-coreは接続プールを提供していないため、`pool_size`設定は未使用です
-2. **認証**: 認証情報の設定は未実装です
-3. **バッチ挿入**: TsurugiはPostgreSQLの`jsonb_populate_recordset`相当の機能をサポートしていないため、各イベントを個別のINSERT文として実行します
+2. **バッチ挿入**: TsurugiはPostgreSQLの`jsonb_populate_recordset`相当の機能をサポートしていないため、各イベントを個別のINSERT文として実行します
 
 ## テスト
 
@@ -236,7 +278,7 @@ Tsurugi Database
 
 以下の機能を将来追加する予定です：
 
-1. **認証サポート**: `Credential`を使用した認証機能
+1. ✅ **認証サポート**: `Credential`を使用した認証機能（実装完了 - tsubakuro-rust-core 0.7.0）
 2. **接続プール対応**: tsubakuro-rust-coreに接続プールが実装された場合の対応
 3. **エラー型の詳細化**: `TgError`の直接利用によるより詳細なエラー情報
 

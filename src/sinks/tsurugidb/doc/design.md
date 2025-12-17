@@ -99,6 +99,11 @@ pub struct TsurugiConfig {
     #[serde(default)]
     pub request: TowerRequestConfig,
 
+    /// 認証情報（オプション）
+    #[configurable(derived)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<TsurugiCredentialConfig>,
+
     /// 確認応答設定
     #[configurable(derived)]
     #[serde(
@@ -132,6 +137,13 @@ pub struct TsurugiConfig {
     - 長いトランザクションや書き込み保存テーブルを指定する場合に使用
   - 内部的には`TransactionType::Short`（OCC）または`TransactionType::Long`（LTX）に変換される
 
+- **credential**: 認証情報（オプション）
+  - `TsurugiCredentialConfig`型で、以下の3つの認証方式をサポート：
+    - `user_password`: ユーザー名/パスワード認証
+    - `auth_token`: 認証トークン認証
+    - `file`: ファイルから認証情報を読み込み
+  - 詳細は「認証」セクションを参照
+
 #### ヘルパー関数
 
 ```rust
@@ -163,6 +175,37 @@ impl GenerateConfig for TsurugiConfig {
 }
 ```
 
+#### TsurugiCredentialConfig
+
+認証情報の設定を表す列挙型です。
+
+```rust
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TsurugiCredentialConfig {
+    /// ユーザー名/パスワード認証
+    UserPassword {
+        /// ユーザー名
+        user: String,
+        /// パスワード（オプション）
+        password: Option<SensitiveString>,
+    },
+
+    /// 認証トークン認証
+    AuthToken {
+        /// 認証トークン
+        token: SensitiveString,
+    },
+
+    /// ファイルから認証情報を読み込む
+    File {
+        /// 認証情報ファイルのパス
+        path: String,
+    },
+}
+```
+
 #### SinkConfigトレイトの実装
 
 ```rust
@@ -176,6 +219,12 @@ impl SinkConfig for TsurugiConfig {
             .map_err(|e| crate::Error::from(format!("Failed to set endpoint URL: {}", e)))?;
         connection_option.set_application_name("Vector Tsurugi Sink");
         connection_option.set_default_timeout(Duration::from_secs(10));
+
+        // 認証情報の設定
+        if let Some(credential_config) = &self.credential {
+            let credential = credential_config.to_credential()?;
+            connection_option.set_credential(credential);
+        }
 
         // 2. セッションの作成（接続プールの代わり）
         // 注意: 現在のtsubakuro-rust-coreは接続プールを提供していないため、
@@ -644,9 +693,39 @@ TsurugiRetryLogicで判定
 
 ### 認証
 
-- 現在の実装では認証情報の設定は未実装
-- 将来的に`Credential`を使用した認証を追加可能
-- 接続文字列に認証情報を含める方法も検討可能
+認証情報の設定は`credential`フィールドでサポートされています。tsubakuro-rust-core 0.7.0以降で利用可能な`Credential`型を使用して実装されています。
+
+#### サポートされる認証方式
+
+1. **ユーザー名/パスワード認証** (`user_password`):
+   ```toml
+   [credential]
+   type = "user_password"
+   user = "admin"
+   password = "secret123"
+   ```
+   - `password`はオプション（パスワードなしで接続する場合）
+
+2. **認証トークン認証** (`auth_token`):
+   ```toml
+   [credential]
+   type = "auth_token"
+   token = "your-auth-token"
+   ```
+
+3. **ファイルから認証情報を読み込み** (`file`):
+   ```toml
+   [credential]
+   type = "file"
+   path = "/etc/tsurugi/credentials"
+   ```
+   - ファイル形式はtsubakuro-rust-coreの`Credential::load()`メソッドでサポートされる形式
+
+#### 実装詳細
+
+- `TsurugiCredentialConfig::to_credential()`メソッドで、設定から`Credential`型に変換
+- `ConnectionOption::set_credential()`で認証情報を設定
+- パスワードやトークンは`SensitiveString`型を使用して機密情報として扱われる
 
 ## テスト戦略
 
@@ -696,12 +775,9 @@ pub struct TsurugiService {
 
 ### 認証対応
 
-```rust
-pub struct TsurugiConfig {
-    // ...
-    pub credential: Option<CredentialConfig>,
-}
-```
+✅ **実装完了** (tsubakuro-rust-core 0.7.0)
+
+認証情報の設定は`TsurugiCredentialConfig`型で実装されています。詳細は「認証」セクションを参照してください。
 
 ## 依存関係
 
@@ -709,11 +785,13 @@ pub struct TsurugiConfig {
 
 ```toml
 [dependencies]
-tsubakuro-rust-core = { version = "0.x", default-features = false, features = ["with_chrono"] }
+tsubakuro-rust-core = { git = "https://github.com/project-tsurugi/tsubakuro-rust.git", branch = "master", default-features = false, features = ["with_chrono"], optional = true }
 
 [features]
 sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
 ```
+
+**注意**: 現在はGitHubリポジトリから直接参照しています（バージョン0.7.0）。crates.ioに0.7.0が公開された場合は、バージョン指定に変更可能です。
 
 ### 機能フラグ
 
@@ -738,10 +816,10 @@ sinks-tsurugidb = ["dep:tsubakuro-rust-core"]
    - バッチサイズの最適化
    - 統合テストの追加
 
-3. **Phase 3: 拡張機能** 📋 将来
-   - 認証サポート
-   - 接続プール対応（実装された場合）
-   - エラー型の詳細化（`TgError`の直接利用）
+3. **Phase 3: 拡張機能** ✅ 一部完了
+   - ✅ 認証サポート（tsubakuro-rust-core 0.7.0で実装完了）
+   - 📋 接続プール対応（実装された場合）
+   - 📋 エラー型の詳細化（`TgError`の直接利用）
 
 ## 参考資料
 

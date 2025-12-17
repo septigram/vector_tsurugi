@@ -1,4 +1,5 @@
 use futures::FutureExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceBuilder;
@@ -7,6 +8,7 @@ use tsubakuro_rust_core::prelude::*;
 use vector_lib::{
     config::AcknowledgementsConfig,
     configurable::{component::GenerateConfig, configurable_component},
+    sensitive_string::SensitiveString,
     sink::VectorSink,
 };
 
@@ -38,6 +40,61 @@ fn parse_transaction_type(s: &str) -> Result<TransactionType, String> {
         "occ" => Ok(TransactionType::Short),
         "ltx" => Ok(TransactionType::Long),
         _ => Err(format!("Invalid transaction type: {}. Must be 'occ' or 'ltx'", s)),
+    }
+}
+
+/// 認証情報の設定
+#[configurable_component]
+#[derive(Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TsurugiCredentialConfig {
+    /// ユーザー名/パスワード認証
+    UserPassword {
+        /// ユーザー名
+        #[configurable(metadata(docs::examples = "${USER}"))]
+        #[configurable(metadata(docs::examples = "admin"))]
+        user: String,
+
+        /// パスワード（オプション）
+        #[configurable(metadata(docs::examples = "${PASSWORD}"))]
+        #[configurable(metadata(docs::examples = "secret123"))]
+        password: Option<SensitiveString>,
+    },
+
+    /// 認証トークン認証
+    AuthToken {
+        /// 認証トークン
+        #[configurable(metadata(docs::examples = "${AUTH_TOKEN}"))]
+        #[configurable(metadata(docs::examples = "token123"))]
+        token: SensitiveString,
+    },
+
+    /// ファイルから認証情報を読み込む
+    File {
+        /// 認証情報ファイルのパス
+        #[configurable(metadata(docs::examples = "/etc/tsurugi/credentials"))]
+        path: String,
+    },
+}
+
+impl TsurugiCredentialConfig {
+    /// Credentialに変換する
+    fn to_credential(&self) -> crate::Result<Credential> {
+        match self {
+            Self::UserPassword { user, password } => {
+                Ok(Credential::from_user_password(
+                    user.clone(),
+                    password.as_ref().map(|p| p.inner().to_string()),
+                ))
+            }
+            Self::AuthToken { token } => {
+                Ok(Credential::from_auth_token(token.inner().to_string()))
+            }
+            Self::File { path } => {
+                Credential::load(Path::new(path))
+                    .map_err(|e| crate::Error::from(format!("Failed to load credential file {}: {}", path, e)))
+            }
+        }
     }
 }
 
@@ -77,6 +134,11 @@ pub struct TsurugiConfig {
     #[serde(default)]
     pub request: TowerRequestConfig,
 
+    /// 認証情報（オプション）
+    #[configurable(derived)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<TsurugiCredentialConfig>,
+
     /// 確認応答設定
     #[configurable(derived)]
     #[serde(
@@ -108,6 +170,12 @@ impl SinkConfig for TsurugiConfig {
             .map_err(|e| crate::Error::from(format!("Failed to set endpoint URL: {}", e)))?;
         connection_option.set_application_name("Vector Tsurugi Sink");
         connection_option.set_default_timeout(Duration::from_secs(10));
+
+        // 認証情報の設定
+        if let Some(credential_config) = &self.credential {
+            let credential = credential_config.to_credential()?;
+            connection_option.set_credential(credential);
+        }
 
         // 2. セッションの作成（接続プールの代わり）
         // 注意: 現在のtsubakuro-rust-coreは接続プールを提供していないため、
@@ -279,5 +347,92 @@ mod tests {
         "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_config_with_user_password_credential() {
+        let cfg = toml::from_str::<TsurugiConfig>(
+            r#"
+            endpoint = "tcp://localhost:12345"
+            table = "mytable"
+            [credential]
+            type = "user_password"
+            user = "testuser"
+            password = "testpass"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.credential.is_some());
+        match cfg.credential.as_ref().unwrap() {
+            TsurugiCredentialConfig::UserPassword { user, password } => {
+                assert_eq!(user, "testuser");
+                assert_eq!(password.as_ref().unwrap().inner(), "testpass");
+            }
+            _ => panic!("Expected UserPassword credential"),
+        }
+    }
+
+    #[test]
+    fn parse_config_with_auth_token_credential() {
+        let cfg = toml::from_str::<TsurugiConfig>(
+            r#"
+            endpoint = "tcp://localhost:12345"
+            table = "mytable"
+            [credential]
+            type = "auth_token"
+            token = "token123"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.credential.is_some());
+        match cfg.credential.as_ref().unwrap() {
+            TsurugiCredentialConfig::AuthToken { token } => {
+                assert_eq!(token.inner(), "token123");
+            }
+            _ => panic!("Expected AuthToken credential"),
+        }
+    }
+
+    #[test]
+    fn parse_config_with_file_credential() {
+        let cfg = toml::from_str::<TsurugiConfig>(
+            r#"
+            endpoint = "tcp://localhost:12345"
+            table = "mytable"
+            [credential]
+            type = "file"
+            path = "/etc/tsurugi/credentials"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.credential.is_some());
+        match cfg.credential.as_ref().unwrap() {
+            TsurugiCredentialConfig::File { path } => {
+                assert_eq!(path, "/etc/tsurugi/credentials");
+            }
+            _ => panic!("Expected File credential"),
+        }
+    }
+
+    #[test]
+    fn parse_config_with_user_password_credential_no_password() {
+        let cfg = toml::from_str::<TsurugiConfig>(
+            r#"
+            endpoint = "tcp://localhost:12345"
+            table = "mytable"
+            [credential]
+            type = "user_password"
+            user = "testuser"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.credential.is_some());
+        match cfg.credential.as_ref().unwrap() {
+            TsurugiCredentialConfig::UserPassword { user, password } => {
+                assert_eq!(user, "testuser");
+                assert!(password.is_none());
+            }
+            _ => panic!("Expected UserPassword credential"),
+        }
     }
 }
