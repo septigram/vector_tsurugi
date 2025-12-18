@@ -1,0 +1,47 @@
+data_dir = "./tmp"
+
+[sources.my_source]
+type = "stdin"
+
+# CSV 1 行をパースして、DDL に合わせたフィールドに整形するトランスフォーム
+[transforms.to_tsurugi_schema]
+type   = "remap"
+inputs = ["my_source"]
+
+source = '''
+# 1 行の CSV を配列にパース（区切り文字は必要に応じて変更）
+parsed = parse_csv!(.message, delimiter: ",")
+
+# 各要素を走査して event_timestamp / valueN を動的に生成
+for_each(parsed) -> |idx, v| {
+  if idx == 0 {
+    # 先頭列はタイムスタンプとして扱う
+    .event_timestamp = v
+  } else {
+    # 2 列目以降は value1, value2, ... にマッピング
+    col_name = "value" + to_string(idx)
+    . = set!(., [col_name], to_float!(v))
+  }
+}
+
+# Tsurugi に不要なフィールドを削除
+del(.message)
+del(.host)
+del(.timestamp)
+del(.source_type)
+'''
+
+[sinks.my_tsurugi_sink]
+type   = "tsurugidb"
+# 変換後のストリームを入力にする
+inputs = ["to_tsurugi_schema"]
+endpoint = "tcp://localhost:12345"
+table    = "${TSURUGI_TABLE}"
+
+[sinks.my_tsurugi_sink.request]
+in_flight_limit = ${VECTOR_IN_FLIGHT_LIMIT}
+
+[sinks.my_tsurugi_sink.credential]
+type     = "user_password"
+user     = "tsurugi"
+password = "password"
